@@ -1,0 +1,220 @@
+<!------------ 초기 설정 ------------>
+<!doctype html>                                                                             <!--문서 유형 선언-->
+<html lang="ko">                                                                            <!--문서 시작 태그-->
+<head>                                                                                      <!--메타데이터 시작-->
+  <meta charset="utf-8" /> 
+  <meta name="viewport" content="width=device-width,initial-scale=1" />                     <!--기기에 맞는 화면너비-->
+  <title>주차타워 뷰어</title>                                                                <!--탭 이름-->
+
+
+
+<!------------ CSS 계층적 스타일 시트 ------------>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+      /* 화면폭 92%(최대 900px) 정사각형 배경 */                                                /* 가로 중앙 정렬 */
+    .board{position:relative; width:min(92vw,900px); aspect-ratio:10/10; margin:0 auto;   
+      background:                                                                           /* 배경 레이어 목록 */
+        linear-gradient(#e5e7eb 1px,transparent 1px) 0 0/100% 10%,                        /* 높이 10%마다 1px 회색 가로줄 */
+        linear-gradient(90deg,#e5e7eb 1px,transparent 1px) 0 0/10% 100%,                  /* 너비 10%마다 1px 회색 세로줄 */
+        linear-gradient(#000000 0 0) center/20px 100% no-repeat;                          /* 가운데 20px 검은 기둥 */
+      border-radius:30px;                                                                   /* 둥근 모서리 */
+      box-shadow:0 8px 24px rgba(0,0,0,.08)}                                              /* 아래로 8px, 블러 24px */ 
+
+      /* board의 가로세로 10%씩 차지하는 grid 셀 (총 100칸) */
+    .cell{position:absolute; width:10%; height:10%; 
+      display:flex; align-items:center; justify-content:center}                             /* 셀 내부 icon박스 가운데 정렬 */
+
+      /* 셀의 가로70% 세로50%를 차지하는 빈자리 박스 */
+    .empty{width:70%; height:50%; border-radius:10px; 
+      background:#10b981; opacity:.15}                                                    /* 15% 불투명한 초록 */
+
+      /* 자동차 박스 */
+    .car{display:flex; flex-direction:column; align-items:center; gap:2px} 
+
+      /* 11px에 줄간격1인 번호판 글씨 */
+    .plate{font:600 11px/1 system-ui; background:#111; color:#fff;
+      padding:2px 6px;                                                                      /* 위아래2px, 좌우6px 여백 */
+      border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,.25)}
+    
+      /* 선택 버튼 */
+    .selectable{outline:2px dashed #10b981; outline-offset:4px; cursor:pointer}
+  </style>
+</head>
+
+
+
+<!------------ body 기본 골격 (Tailwind 기반) ------------>
+<body class="bg-slate-50">                                                                  <!-- 페이지 바탕 회색 -->
+  <div class="max-w-6xl mx-auto p-4 space-y-4">                                             <!-- 최대너비제한, 가로중앙정렬, 안쪽여백4 / division 공간 생성 -->
+    <div class="flex flex-wrap items-center gap-2">
+      <input id="plate" class="px-3 py-2 rounded-lg border border-slate-300 flex-1 min-w-[220px]" placeholder="차량번호 입력 (예: 12가3456)" />
+      <button id="btnCheck" class="px-3 py-2 rounded-lg bg-slate-800 text-white">상태 확인</button>
+      <button id="btnEnter" class="px-3 py-2 rounded-lg bg-emerald-600 text-white">입차</button>
+      <button id="btnExit"  class="px-3 py-2 rounded-lg bg-rose-600 text-white">출차</button>
+      <span class="text-sm text-slate-500 ml-auto">업데이트: <span id="ts">-</span></span>   <!-- 작은, 회색 / 시간 정보 들어갈 범위(span) 추가 -->
+    </div>
+    <div id="hint" class="text-sm" style="margin-bottom:8px;color:#475569"></div>
+    <div id="board" class="board"></div>
+  </div>
+
+
+
+<!------------ 자바스크립트 시작 ------------>
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+const API = `${API_BASE}/state`;                                                            // 백엔드 데이터가 담긴 서버 주소 
+const FLOORS = Array.from({length:10},(_,i)=>String.fromCharCode(65+i));                    // ASCII코드65~74 → 문자A~J (배열 생성)
+const CELLS  = Array.from({length:10},(_,i)=>i+1);                                          // 1~10 (배열 생성)
+
+///// 빈칸(0)으로 채운 grid 셀 생성
+function makeEmptyState(){
+    const cell = {}; 
+    for (const f of FLOORS) for (const c of CELLS) cell[`${f}${c}`] = 0;
+    return { cell, parking: {} }}
+
+///// 'A'~'J'를 좌표(%)로 변환(A는 아래, J는 위)
+function posTop(f){                                                                         // f.charCodeAt(0) = 문자열 f의 첫글자 
+    const n = f.charCodeAt(0)-64;                                                           // A(65)-64=1, B(67)→2 ... J→10
+    return (10-n)*10 }                                                                      // 10-A(1)=9 (아래), 10-J(10)=0 (위)
+
+///// 자동차 이모지 생성
+function carEmoji(){
+    const emoji = document.createElement('div');                                            // division 공간 생성
+    emoji.textContent = '🚗'; emoji.style.fontSize = '30px'; emoji.style.lineHeight = '1';  // 텍스트 이모지 넣기 
+    emoji.style.filter = 'drop-shadow(0 1px 1px rgba(0,0,0,10))';                           // 그림자 
+    return emoji }
+
+
+let selectMode = null; 
+function setHint(msg){ 
+  document.getElementById("hint").textContent = msg || ""; }
+
+
+
+///// 전달받은 상태로 칸들을 DOM에 그려넣기.
+function render(state){
+    const board = document.getElementById("board"); board.innerHTML = "";                   // board 새로 불러오기
+
+    // value(loca)을 key(plate)로 바꾸기 
+    const parking_info = {};
+    for(const [key,value] of Object.entries(state.parking||{})){ 
+        parking_info[value.loca]=key}
+  
+    // 셀 하나씩 자리번호(loca) 부여 
+    for(const f of FLOORS){ for(const c of CELLS){ const loca = `${f}${c}`;
+        const cell = document.createElement("div"); cell.className = "cell";                // division 공간 생성
+        cell.style.left = `${(c-1)*10}%`; cell.style.top  = `${posTop(f)}%`;                // 좌표(%) 지정 
+
+        // 주차 여부 판단 
+        const full = Number(state.grid?.[loca]) === 1;  
+        if (full) {
+            const car = document.createElement("div"); car.className = "car";
+            car.appendChild(carEmoji());                                                    // car에 추가
+            const plate = document.createElement("div"); plate.className = "plate"; 
+            plate.textContent = parking_info[loca] || "";
+            car.appendChild(plate); cell.appendChild(car);                                  // car에 붙이고 cell에 추가
+            cell.title = `${loca} · ${plate.textContent}`}                                  // 마우스 툴팁 텍스트 (올리면 보임)
+        else{
+            const empty = document.createElement("div"); empty.className = "empty";
+            cell.appendChild(empty);
+            cell.title = `${loca} (빈자리)`;
+
+            // 자리 선택 모드면 빈칸 클릭 → 입차
+            if (selectMode){
+              cell.style.outline="2px dashed #10b981"; cell.style.outlineOffset="4px"; cell.style.cursor="pointer";
+              cell.addEventListener("click", async () => {
+                const plate = selectMode.plate; const join  = !!selectMode.join;
+
+                // 정기권 자리 선택 = /in_sspark 사용 (join=true면 정기권 신규가입)
+                const payload = join ? { plate, loca, join: true } : { plate, loca };
+                const res = await fetch(`${API_BASE}/in_sspark`, {
+                  method: "POST",
+                  headers: {"Content-Type":"application/json"},
+                  body: JSON.stringify(payload)});
+                const data = await res.json().catch(()=>({}));
+                if (!res.ok){alert(`입차 실패: ${data.detail || res.statusText}`); return}
+                alert(`입차 완료! 자리: ${data.loca} (정기권: 예)`);
+                selectMode = null; setHint(""); tick()})}}
+
+        board.appendChild(cell)}}
+
+    document.getElementById("ts").textContent = new Date().toLocaleString() }               // 새로고침 시각
+
+///// fetch(API)로 상태를 가져와 render 호출(주기적으로 실행).
+async function tick(){
+    try{
+        const res = await fetch(API, {cache:"no-store"});                                   // 응답이 올 때까지 다음 줄로 안 넘어감
+        const state = await res.json();
+        render(state)}
+    catch(e){
+        console.warn("state fetch 실패:", e) }}                                              // 서버 꺼져있을 때도 화면은 유지
+
+
+render(makeEmptyState());     // 초기 화면
+tick();                       // 서버 시도
+setInterval(tick, 2000);      // 2초마다 갱신 
+
+
+// --- 버튼: 상태 확인 ---
+document.getElementById("btnCheck").addEventListener("click", async () => {
+  const plate = document.getElementById("plate").value.trim(); 
+  if (!plate) return alert("차량번호를 입력하세요.");
+  const res = await fetch(`${API_BASE}/check`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ plate })});
+  const data = await res.json();
+  if (!res.ok) return alert(data.detail || res.statusText);
+  if (data.status === "in"){
+    alert(`이미 주차 중입니다. 위치: ${data.loca} (정기권: ${data.ss_pass ? "예" : "아니오"})`)} 
+  else {
+    alert(`주차중이 아닙니다. 정기권 여부: ${data.ss_pass ? "예" : "아니오"}`)}});
+
+// --- 버튼: 입차 ---
+document.getElementById("btnEnter").addEventListener("click", async () => {
+  const plate = document.getElementById("plate").value.trim(); 
+  if (!plate) return alert("차량번호를 입력하세요.");
+
+  // 현재 상태 체크
+  const r = await fetch(`${API_BASE}/check`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ plate })});
+  const info = await r.json();
+  if (!r.ok) return alert(info.detail || r.statusText);
+  if (info.status === "in") {
+    return alert(`이미 주차 중입니다. 위치: ${info.loca}`)}
+
+  if (info.ss_pass){
+    // 정기권이면: 빈칸 클릭해서 자리 선택 -> /in_sspark
+    selectMode = { plate, join: false };
+    setHint("정기권 차량입니다. 빈 칸을 클릭해 원하는 자리를 선택하세요.")} 
+  else {
+    const join = confirm("정기권에 가입하시겠습니까? (예: 자리 직접 선택, 아니오: 자동 배정)");
+    if (join){
+      // 신규 가입 + 자리 직접 선택 -> /in_sspark (join:true)
+      selectMode = { plate, join: true };
+      setHint("정기권 신규 가입! 빈 칸을 클릭해 원하는 자리를 선택하세요.")} 
+    else {
+      // 일반차량 자동배정 -> /in_park
+      const res = await fetch(`${API_BASE}/in_park`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ plate })});
+      const data = await res.json();
+      if (!res.ok) return alert(`입차 실패: ${data.detail || res.statusText}`);
+      alert(`입차 완료! 배정된 자리: ${data.loca}`);
+      tick()}}});
+
+// --- 버튼: 출차 ---
+document.getElementById("btnExit").addEventListener("click", async () => {
+  const plate = document.getElementById("plate").value.trim(); 
+  if (!plate) return alert("차량번호를 입력하세요.");
+  const res = await fetch(`${API_BASE}/out_park`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ plate })});
+  const data = await res.json();
+  if (!res.ok) return alert(`출차 실패: ${data.detail || res.statusText}`);
+  alert("출차 완료!");
+  tick();});
+</script>
+
+</body>
+</html>
